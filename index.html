@@ -377,7 +377,7 @@ $('authForm').onsubmit = async e => {
   $('authSubmit').disabled = true;
   try {
     if (signupMode){
-      const {data, error} = await sb.auth.signUp({email, password, options:{data:{full_name:$('authName').value.trim()}}});
+      const {data, error} = await sb.auth.signUp({email, password, options:{data:{full_name:$('authName').value.trim()}, emailRedirectTo: location.origin + location.pathname}});
       if (error) throw error;
       if (!data.session){ toast('Cek email untuk konfirmasi akun, lalu masuk.'); setAuthMode(false); }
     } else {
