@@ -433,14 +433,18 @@ async function loadMaster() {
 async function loadStaff() { try { S.staff = await rpc("staff_names"); } catch (e) { S.staff = []; } }
 const staffName = id => S.staff.find(s => s.id === id)?.full_name || "—";
 const ingById = id => S.ing.find(i => i.id === id);
+const baseItem = () => S.menu.find(m => m.kind === "base" && m.active);
+const sellable = () => S.menu.filter(m => m.kind !== "base" && m.active && m.category !== "Arsip");
 async function dayData(date) {
   const [prep, sales] = await Promise.all([
     q(SB.from("daily_prep").select("*").eq("prep_date", date)),
     q(SB.from("sales").select("*, sale_items(*)").eq("sale_date", date).order("created_at", {ascending: false}))
   ]);
   const sold = {};
-  sales.filter(x => x.status === "paid").forEach(x => x.sale_items.forEach(i => sold[i.menu_item_id] = (sold[i.menu_item_id] || 0) + i.qty));
-  return {prep, sales, sold};
+  let bowls = 0;
+  sales.filter(x => x.status === "paid").forEach(x => x.sale_items.forEach(i => { sold[i.menu_item_id] = (sold[i.menu_item_id] || 0) + i.qty; if (S.menu.find(m => m.id === i.menu_item_id)?.uses_base) bowls += i.qty; }));
+  const b = baseItem(); if (b) sold[b.id] = bowls;
+  return {prep, sales, sold, bowls};
 }
 
 /* ---------- AUTH ---------- */
@@ -534,7 +538,7 @@ async function vBeranda(el) {
   const prepClosed = day.prep.length > 0 && day.prep.every(p => p.closed);
   const paid = day.sales.filter(s => s.status === "paid");
   const omzet = paid.reduce((a, s) => a + Number(s.total), 0);
-  const porsi = Object.values(day.sold).reduce((a, b) => a + b, 0);
+  const porsi = day.bowls;
   const avail = day.prep.reduce((a, p) => a + p.carry_in + p.prepared, 0) - porsi;
   const low = S.ing.filter(i => i.active && Number(i.min_stock) > 0 && Number(i.stock_qty) <= Number(i.min_stock));
   const T = [
@@ -601,7 +605,7 @@ async function vKasir(el) {
       <div class="stack" style="gap:.55rem">
         <div class="summary">
           <div class="sr"><span class="muted">Subtotal</span><span id="cSub">Rp0</span></div>
-          <div class="sr"><span class="muted">Jumlah porsi</span><span id="cQty">0</span></div>
+          <div class="sr"><span class="muted">Jumlah item</span><span id="cQty">0</span></div>
           <div class="sr tot"><span>Total bayar</span><span id="cartTotal">Rp0</span></div>
         </div>
         <div class="seg" role="group" aria-label="Metode bayar"><button id="payTunai" aria-pressed="true">Tunai</button><button id="payQris" aria-pressed="false">QRIS</button></div>
@@ -628,10 +632,11 @@ async function vKasir(el) {
 async function refreshKasir() {
   const d = await dayData(today());
   S.avail = {};
-  S.menu.filter(m => m.active).forEach(m => { const p = d.prep.find(x => x.menu_item_id === m.id) || {carry_in: 0, prepared: 0}; S.avail[m.id] = p.carry_in + p.prepared - (d.sold[m.id] || 0); });
+  const b = baseItem(), bp = b && d.prep.find(x => x.menu_item_id === b.id) || {carry_in: 0, prepared: 0};
+  S.baseAvail = b ? bp.carry_in + bp.prepared - d.bowls : null;
   drawMenu(); drawCart();
   const paid = d.sales.filter(x => x.status === "paid");
-  $("#trxSum").textContent = `${paid.length} transaksi · ${Object.values(d.sold).reduce((a, b) => a + b, 0)} porsi · ${rp(paid.reduce((a, x) => a + Number(x.total), 0))}`;
+  $("#trxSum").textContent = `${paid.length} transaksi · ${d.bowls} mangkuk · ${rp(paid.reduce((a, x) => a + Number(x.total), 0))}`;
   $("#trxList").innerHTML = d.sales.length ? `<table><thead><tr><th>No.</th><th>Jam</th><th>Pesanan</th><th>Bayar</th><th class="num">Total</th>${isAdmin() ? "<th></th>" : ""}</tr></thead><tbody>
     ${d.sales.map(x => `<tr><td>${esc(x.sale_no.split("-").pop())}</td><td>${fTime(x.created_at)}</td><td>${x.sale_items.map(i => `${i.qty}× ${esc(i.name)}`).join(", ")}<div class="muted small">${x.order_type === "take_away" ? "Bawa pulang" : "Makan di tempat"} · ${esc(staffName(x.cashier_id))}${x.note ? " · " + esc(x.note) : ""}</div></td>
       <td>${x.status === "void" ? `<span class="pill bad">Batal</span>` : `<span class="pill ${x.payment_method === "qris" ? "ink" : "ok"}">${x.payment_method === "qris" ? "QRIS" : "Tunai"}</span>`}</td>
@@ -641,7 +646,7 @@ async function refreshKasir() {
     async reason => { await rpc("void_sale", {p_id: +b.dataset.void, p_reason: reason || "-"}); toast("Transaksi dibatalkan."); refreshKasir(); }, {input: "Alasan", danger: true}));
 }
 function drawMenu() {
-  const act = S.menu.filter(m => m.active);
+  const act = sellable();
   const cats = [...new Set(act.map(m => m.category || "Bubur"))];
   const cur = S.ui.mcat && (S.ui.mcat === "*" || cats.includes(S.ui.mcat)) ? S.ui.mcat : "*";
   $("#cats").innerHTML = [["*", "Semua", act.length], ...cats.map(c => [c, c, act.filter(m => (m.category || "Bubur") === c).length])]
@@ -650,14 +655,16 @@ function drawMenu() {
   const qq = (S.ui.mq || "").toLowerCase();
   const items = act.filter(m => (cur === "*" || (m.category || "Bubur") === cur) && (!qq || m.name.toLowerCase().includes(qq)));
   $("#menuGrid").innerHTML = items.map(m => {
-    const left = (S.avail[m.id] || 0) - (S.cart[m.id] || 0), cls = left <= 0 ? "bad" : left <= 5 ? "warn" : "ok";
-    return `<button class="mcard${left <= 0 ? " out" : ""}" data-add="${m.id}" aria-label="Tambah ${esc(m.name)}">
-      <span class="img">${menuImg(m)}<span class="stock pill ${cls}">${left <= 0 ? "Prep habis" : `Sisa ${left}`}</span>${S.cart[m.id] ? `<span class="badge">${S.cart[m.id]}</span>` : ""}</span>
+    const left = bowlsLeft(), cls = left <= 0 ? "bad" : left <= 5 ? "warn" : "ok", tracked = m.uses_base && S.baseAvail != null;
+    return `<button class="mcard${tracked && left <= 0 ? " out" : ""}" data-add="${m.id}" aria-label="Tambah ${esc(m.name)}">
+      <span class="img">${menuImg(m)}${tracked ? `<span class="stock pill ${cls}">${left <= 0 ? "Bubur habis" : `Sisa ${left} mangkuk`}</span>` : `<span class="stock pill idle">${esc(m.category || "Ekstra")}</span>`}${S.cart[m.id] ? `<span class="badge">${S.cart[m.id]}</span>` : ""}</span>
       <span class="nm">${esc(m.name)}</span>
       <span class="ft"><span class="pr">${rp(m.price)}</span><span class="add" aria-hidden="true">+</span></span></button>`;
   }).join("") || `<div class="empty" style="grid-column:1/-1">${act.length ? "Menu tidak ditemukan." : "Belum ada menu aktif. Tambahkan di Pengaturan → Menu."}</div>`;
   $$("[data-add]").forEach(b => b.onclick = () => { const id = b.dataset.add; S.cart[id] = (S.cart[id] || 0) + 1; drawMenu(); drawCart(); });
 }
+const cartBowls = () => Object.entries(S.cart).reduce((a, [id, n]) => a + (S.menu.find(m => m.id == id)?.uses_base ? n : 0), 0);
+const bowlsLeft = () => (S.baseAvail ?? 0) - cartBowls();
 const cartTotal = () => Object.entries(S.cart).reduce((a, [id, n]) => a + n * Number(S.menu.find(m => m.id == id)?.price || 0), 0);
 function drawCart() {
   const lines = Object.entries(S.cart).filter(([, n]) => n > 0);
@@ -684,7 +691,7 @@ async function doPay() {
   const t = cartTotal(); if (!t) return;
   const paid = S.pay === "tunai" ? (pn($("#cashIn").value) || t) : t;
   if (S.pay === "tunai" && paid < t) return toast("Uang diterima kurang dari total.", true);
-  const over = Object.entries(S.cart).filter(([id, n]) => n > (S.avail[id] || 0));
+  const over = S.baseAvail != null && bowlsLeft() < 0 ? [1] : [];
   const run = () => busy($("#payBtn"), async () => {
     const items = Object.entries(S.cart).map(([id, n]) => ({menu_item_id: +id, qty: n}));
     const lines = items.map(i => { const m = S.menu.find(x => x.id === i.menu_item_id); return (`${i.qty} x ${m.name}`).slice(0, 22).padEnd(22) + rp(i.qty * m.price).padStart(12); }).join("\n");
@@ -699,7 +706,7 @@ async function doPay() {
     m.querySelector("#okR").onclick = closeModal;
     await refreshKasir();
   });
-  if (over.length) confirmBox("Melebihi porsi prep", `Pesanan melebihi porsi yang tercatat di prep hari ini (${over.map(([id]) => esc(S.menu.find(m => m.id == id).name)).join(", ")}). Catat prep dulu agar stok bahan akurat, atau tetap lanjutkan.`, "Tetap bayar", run);
+  if (over.length) confirmBox("Melebihi porsi prep", `Jumlah mangkuk bubur di pesanan ini melebihi sisa bubur di panci hari ini (sisa ${S.baseAvail}). Catat prep dulu agar stok akurat, atau tetap lanjutkan.`, "Tetap bayar", run);
   else run();
 }
 
@@ -707,12 +714,12 @@ async function doPay() {
 async function vPrep(el) {
   const date = S.ui.prepDate || today();
   el.innerHTML = `<div class="head"><div><div class="eyebrow">Dapur</div><h2>Prep harian</h2></div><label style="flex:0 0 190px">Tanggal<input type="date" id="prepDate" value="${date}"></label></div>
-    <p class="muted" style="max-width:68ch">Alur porsi: <b class="ink">sisa kemarin + prep − terjual = tersedia</b>. Setiap prep memotong bahan baku sesuai resep. Saat tutup, catat porsi yang dibuang dan yang disimpan untuk besok; angka simpanan menjadi sisa kemarin di hari berikutnya.</p>
+    <p class="muted" style="max-width:68ch">Hitungan dalam <b>mangkuk</b>: <b class="ink">sisa kemarin + masak hari ini − terjual = tersedia</b>. Bubur Simpang 3 dan bubur polos sama-sama mengambil dari panci ini. Setiap catat masak memotong bahan dasar (beras); topping dan ekstra terpotong saat terjual. Saat tutup, catat porsi yang dibuang dan yang disimpan untuk besok; angka simpanan menjadi sisa kemarin di hari berikutnya.</p>
     <div class="grid2" id="prepCards"></div>`;
   $("#prepDate").onchange = e => { S.ui.prepDate = e.target.value; vPrep(el); };
   try { await rpc("open_day", {p_date: date}); } catch (e) {}
   const d = await dayData(date);
-  const items = S.menu.filter(m => m.active || d.prep.some(p => p.menu_item_id === m.id));
+  const items = S.menu.filter(m => m.kind === "base" && (m.active || d.prep.some(p => p.menu_item_id === m.id)));
   const hasRecipe = new Set((await q(SB.from("recipe_lines").select("menu_item_id"))).map(r => r.menu_item_id));
   $("#prepCards").innerHTML = items.map(m => {
     const p = d.prep.find(x => x.menu_item_id === m.id) || {carry_in: 0, prepared: 0, waste: 0, carry_out: 0, closed: false};
@@ -723,8 +730,8 @@ async function vPrep(el) {
       <div class="flow"><div><span>Sisa kemarin</span><b>${p.carry_in}</b></div><div><span>Prep</span><b>${p.prepared}</b></div><div><span>Terjual</span><b>${sold}</b></div>
         <div class="hl"><span>Tersedia</span><b>${avail}</b></div><div><span>Waste</span><b>${p.waste}</b></div><div><span>Simpan</span><b>${p.carry_out}</b></div></div>
       ${hasRecipe.has(m.id) ? "" : `<p class="small" style="color:var(--warn)">Resep menu ini belum diisi, jadi prep belum memotong stok bahan.</p>`}
-      ${can ? `<div class="row"><label>Tambah prep (porsi)<input id="pq-${m.id}" inputmode="numeric" placeholder="mis. 40"></label>
-          <button class="btn pri" data-prep="${m.id}">Catat prep</button><button class="btn ghost sm" data-fix="${m.id}">Koreksi</button></div>
+      ${can ? `<div class="row"><label>Masak (mangkuk)<input id="pq-${m.id}" inputmode="numeric" placeholder="mis. 40"></label>
+          <button class="btn pri" data-prep="${m.id}">Catat masak</button><button class="btn ghost sm" data-fix="${m.id}">Koreksi</button></div>
         <div class="rule"></div>
         <div class="row"><label>Waste (dibuang)<input id="pw-${m.id}" inputmode="numeric" value="${p.closed ? p.waste : ""}" placeholder="0"></label>
           <label>Simpan untuk besok<input id="pc-${m.id}" inputmode="numeric" value="${p.closed ? p.carry_out : ""}" placeholder="${Math.max(avail, 0)}"></label>
@@ -1165,15 +1172,16 @@ const SET = {
       busy(f.querySelector("button"), async () => { await saveSetting("checklists", {opening: sp(f.opening.value), closing: sp(f.closing.value)}); toast("Checklist tersimpan."); }); };
   },
   async menu(box, re) {
-    box.innerHTML = `<div class="panel stack"><div class="tbl"><table><thead><tr><th>Foto</th><th>Menu</th><th>Kategori</th><th class="num">Harga</th><th class="num">HPP/porsi</th><th>Aktif</th><th></th></tr></thead><tbody>
-      ${S.menu.map((m, i) => `<tr><td><label style="display:block;cursor:pointer" title="Ganti foto"><span class="mcard" style="padding:0;border:0;display:block;width:64px"><span class="img" style="aspect-ratio:1">${menuImg(m, i)}</span></span><input type="file" accept="image/*" data-mi="${m.id}" hidden></label>${m.image_url ? `<button class="btn sm ghost" data-mx="${m.id}" style="margin-top:.25rem">Hapus foto</button>` : ""}</td>
+    box.innerHTML = `<div class="panel stack"><div class="tbl"><table><thead><tr><th>Foto</th><th>Menu</th><th>Kategori</th><th class="num">Harga</th><th class="num">HPP/porsi</th><th title="Mengambil 1 mangkuk dari panci bubur harian">Pakai bubur</th><th>Aktif</th><th></th></tr></thead><tbody>
+      ${S.menu.filter(m => m.category !== "Arsip" && m.kind !== "base").map((m, i) => `<tr><td><label style="display:block;cursor:pointer" title="Ganti foto"><span class="mcard" style="padding:0;border:0;display:block;width:64px"><span class="img" style="aspect-ratio:1">${menuImg(m, i)}</span></span><input type="file" accept="image/*" data-mi="${m.id}" hidden></label>${m.image_url ? `<button class="btn sm ghost" data-mx="${m.id}" style="margin-top:.25rem">Hapus foto</button>` : ""}</td>
         <td><input data-mn="${m.id}" value="${esc(m.name)}" style="min-width:150px"></td><td><input data-mc="${m.id}" value="${esc(m.category || "Bubur")}" style="width:110px"></td><td><input data-mp="${m.id}" inputmode="numeric" value="${num(m.price, 0)}" style="max-width:120px;text-align:right"></td><td class="num" id="hpp-${m.id}">…</td>
+        <td><input type="checkbox" data-mu="${m.id}" ${m.uses_base ? "checked" : ""} style="width:auto"></td>
         <td><input type="checkbox" data-ma="${m.id}" ${m.active ? "checked" : ""} style="width:auto"></td><td><button class="btn sm" data-ms="${m.id}">Simpan</button></td></tr>`).join("")}</tbody></table></div>
-      <p class="muted small">Ketuk gambar untuk mengunggah foto menu. Tanpa foto, kartu menu memakai ilustrasi BST.</p>
+      <p class="muted small">Ketuk gambar untuk mengunggah foto menu. <b>Pakai bubur</b> = setiap terjual mengambil 1 mangkuk dari panci bubur harian (Bubur Simpang 3, bubur polos). Ekstra tidak dicentang. Menu dengan harga Rp0 sebaiknya dinonaktifkan sampai harganya diisi.</p>
       <div class="rule"></div>
       <div class="row"><label>Menu baru<input id="nmN" placeholder="mis. Bubur Spesial"></label><label style="flex:0 1 140px">Kategori<input id="nmC" placeholder="Bubur"></label><label style="flex:0 1 150px">Harga<input id="nmP" inputmode="numeric" placeholder="32.000"></label><button class="btn pri" id="nmAdd">Tambah menu</button></div></div>`;
     S.menu.forEach(async m => { try { const c = await rpc("portion_cost", {p_menu: m.id}); $("#hpp-" + m.id).innerHTML = `${rp(c)} <span class="muted small">${m.price ? Math.round(c / m.price * 100) : 0}%</span>`; } catch (e) {} });
-    $$("[data-ms]").forEach(b => b.onclick = () => { const id = +b.dataset.ms; busy(b, async () => { await q(SB.from("menu_items").update({name: $(`[data-mn="${id}"]`).value.trim(), category: $(`[data-mc="${id}"]`).value.trim() || "Bubur", price: pn($(`[data-mp="${id}"]`).value), active: $(`[data-ma="${id}"]`).checked}).eq("id", id)); toast("Menu disimpan."); re(); }); });
+    $$("[data-ms]").forEach(b => b.onclick = () => { const id = +b.dataset.ms; busy(b, async () => { await q(SB.from("menu_items").update({name: $(`[data-mn="${id}"]`).value.trim(), category: $(`[data-mc="${id}"]`).value.trim() || "Bubur", price: pn($(`[data-mp="${id}"]`).value), uses_base: $(`[data-mu="${id}"]`).checked, active: $(`[data-ma="${id}"]`).checked}).eq("id", id)); toast("Menu disimpan."); re(); }); });
     $$("[data-mi]").forEach(inp => inp.onchange = async () => { const f = inp.files[0]; if (!f) return; toast("Mengunggah foto…");
       try { const blob = await shrink(f, 900); const path = `menu/${inp.dataset.mi}-${Math.random().toString(36).slice(2, 10)}.jpg`;
         const up = await SB.storage.from("photos").upload(path, blob, {contentType: "image/jpeg"}); if (up.error) throw up.error;
@@ -1200,8 +1208,8 @@ const SET = {
         if (error) throw new Error(error.code === "23505" ? "Bahan dengan nama itu sudah ada." : error.message); toast("Bahan ditambahkan."); re(); }); };
   },
   async resep(box, re) {
-    const mid = +(S.ui.recipeMenu || S.menu[0]?.id);
-    box.innerHTML = `<div class="panel stack"><div class="row"><label style="flex:0 1 280px">Menu<select id="rcM">${S.menu.map(m => `<option value="${m.id}" ${m.id === mid ? "selected" : ""}>${esc(m.name)}</option>`).join("")}</select></label></div>
+    const RM = S.menu.filter(m => m.category !== "Arsip"); const mid = +(S.ui.recipeMenu || RM[0]?.id);
+    box.innerHTML = `<div class="panel stack"><div class="row"><label style="flex:0 1 280px">Menu<select id="rcM">${RM.map(m => `<option value="${m.id}" ${m.id === mid ? "selected" : ""}>${esc(m.kind === "base" ? m.name + " — bahan dasar per mangkuk" : m.name)}</option>`).join("")}</select></label></div>
       <div class="tbl" id="rcT"></div><div class="rule"></div>
       <div class="row"><label>Bahan<select id="rcI">${S.ing.filter(i => i.active).map(i => `<option value="${i.id}">${esc(i.name)} (${esc(i.unit)})</option>`).join("") || `<option value="">Tambah bahan dulu</option>`}</select></label><label style="flex:0 1 170px">Takaran per porsi<input id="rcQ" inputmode="decimal"></label><button class="btn pri" id="rcAdd">Tambah ke resep</button></div>
       <p class="muted small">Takaran memakai satuan bahan. Contoh: beras 80 gram per porsi, telur 0,5 butir per porsi.</p></div>`;
@@ -1209,9 +1217,11 @@ const SET = {
     const lines = await q(SB.from("recipe_lines").select("*").eq("menu_item_id", mid));
     const price = Number(S.menu.find(m => m.id === mid)?.price || 0); let tot = 0;
     const rows = lines.map(r => { const i = ingById(r.ingredient_id), c = r.qty_per_portion * (i?.cost_per_unit || 0); tot += c; return `<tr><td>${esc(i?.name)}</td><td class="num">${num(r.qty_per_portion, 4)} ${esc(i?.unit)}</td><td class="num">${rp(c)}</td><td class="num"><button class="btn danger sm" data-rd="${r.id}" aria-label="Hapus">×</button></td></tr>`; }).join("");
-    const tgt = Number(S.settings.targets?.food_cost || 35), fc = price ? tot / price * 100 : 0;
-    $("#rcT").innerHTML = rows ? `<table><thead><tr><th>Bahan</th><th class="num">Per porsi</th><th class="num">Biaya</th><th></th></tr></thead><tbody>${rows}
-      <tr><td><b>HPP per porsi</b></td><td></td><td class="num"><b>${rp(tot)}</b></td><td class="num"><span class="pill ${fc <= tgt ? "ok" : "bad"}">${fc.toFixed(1)}%</span></td></tr></tbody></table>`
+    const mi = S.menu.find(m => m.id === mid), full = Number(await rpc("portion_cost", {p_menu: mid})), baseC = full - tot;
+    const tgt = Number(S.settings.targets?.food_cost || 35), fc = price ? full / price * 100 : 0;
+    $("#rcT").innerHTML = rows || (mi?.uses_base && baseC > 0) ? `<table><thead><tr><th>Bahan</th><th class="num">Per porsi</th><th class="num">Biaya</th><th></th></tr></thead><tbody>${rows}
+      ${mi?.uses_base && baseC > 0 ? `<tr><td class="muted">Bubur dasar dari panci (1 mangkuk)</td><td></td><td class="num">${rp(baseC)}</td><td></td></tr>` : ""}
+      <tr><td><b>${mi?.kind === "base" ? "Biaya bahan dasar per mangkuk" : "HPP per porsi"}</b></td><td></td><td class="num"><b>${rp(full)}</b></td><td class="num">${price ? `<span class="pill ${fc <= tgt ? "ok" : "bad"}">${fc.toFixed(1)}%</span>` : ""}</td></tr></tbody></table>`
       : `<div class="empty">Resep menu ini belum diisi. Tambahkan bahan dan takaran per porsi sesuai COGS.</div>`;
     $$("[data-rd]").forEach(b => b.onclick = () => busy(b, async () => { await q(SB.from("recipe_lines").delete().eq("id", +b.dataset.rd)); re(); }));
     $("#rcAdd").onclick = e => { const n = pd($("#rcQ").value); if (!(n > 0) || !$("#rcI").value) return toast("Pilih bahan dan isi takaran.", true);
@@ -1263,7 +1273,7 @@ async function boot() {
 }
 boot();
 
-const BUILD = "20261017012716";
+const BUILD = "20261017015046";
 async function checkUpdate() { try { const t = await (await fetch(location.pathname + "?u=" + Date.now(), {cache: "no-store"})).text(); if (t.includes('const BUILD = "') && !t.includes('const BUILD = "' + BUILD + '"')) showUpdate(); } catch (e) {} }
 function showUpdate() { if ($("#upd")) return; const d = document.createElement("div"); d.id = "upd"; d.className = "upd"; d.setAttribute("role", "status"); d.innerHTML = '<span>Versi baru BST OS tersedia</span><button class="btn sm">Muat ulang</button>'; d.querySelector("button").onclick = () => location.reload(); document.body.appendChild(d); }
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") checkUpdate(); });
