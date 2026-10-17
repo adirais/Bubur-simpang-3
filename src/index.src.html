@@ -1067,6 +1067,7 @@ async function vLaporan(el) {
         <tr><td><b>Laba bersih</b></td><td class="num"><b style="color:${bersih < 0 ? "var(--bad)" : "var(--ok)"}">${rp(bersih)}</b>${pct(bersih)}</td></tr>
         <tr><td colspan="2"><div class="rule"></div></td></tr>
         <tr><td class="muted">Tunai / QRIS</td><td class="num muted">${rp(r.by_payment.tunai || 0)} / ${rp(r.by_payment.qris || 0)}</td></tr>
+        ${Number(r.aset) ? `<tr><td class="muted">Aset & investasi (tidak mengurangi laba)</td><td class="num muted">${rp(r.aset)}</td></tr>` : ""}
         <tr><td class="muted">Kas keluar untuk belanja bahan</td><td class="num muted">${rp(r.pembelian)}</td></tr>
         <tr><td class="muted">Total selisih kas closing</td><td class="num" style="color:${Number(r.selisih_kas) ? "var(--bad)" : "inherit"}">${rp(r.selisih_kas)}</td></tr>
         ${r.void_count ? `<tr><td class="muted">Transaksi dibatalkan</td><td class="num muted">${r.void_count}</td></tr>` : ""}
@@ -1076,9 +1077,9 @@ async function vLaporan(el) {
       <div class="panel"><h3>Per menu</h3>${(r.per_menu || []).length ? `<div class="tbl"><table><thead><tr><th>Menu</th><th class="num">Porsi</th><th class="num">Omzet</th><th class="num">HPP</th><th class="num">Margin</th></tr></thead><tbody>
         ${r.per_menu.map(x => `<tr><td>${esc(x.name)}</td><td class="num">${x.qty}</td><td class="num">${rp(x.omzet)}</td><td class="num">${rp(x.hpp)}</td><td class="num">${x.omzet ? Math.round((x.omzet - x.hpp) / x.omzet * 100) : 0}%</td></tr>`).join("")}</tbody></table></div>` : `<p class="muted">Belum ada penjualan di periode ini.</p>`}</div>
       <div class="panel stack"><h3 style="margin:0">Biaya operasional</h3>
-        <div class="row"><label>Tanggal<input type="date" id="xD" value="${today()}"></label><label>Kategori<select id="xC">${["Gaji", "Sewa", "Gas", "Listrik & air", "Kemasan", "Transport", "Perawatan", "Marketing", "Lainnya"].map(c => `<option>${c}</option>`).join("")}</select></label><label>Jumlah (Rp)<input id="xA" inputmode="numeric"></label></div>
+        <div class="row"><label>Tanggal<input type="date" id="xD" value="${today()}"></label><label>Kategori<select id="xC">${["Bahan baku", "Kemasan", "Gas", "Transport", "Perlengkapan", "Tenaga kerja", "Gaji", "Sewa", "Listrik & air", "Perawatan", "Marketing", "Aset & investasi", "Lainnya"].map(c => `<option>${c}</option>`).join("")}</select></label><label>Jumlah (Rp)<input id="xA" inputmode="numeric"></label></div>
         <div class="row"><label>Catatan<input id="xN"></label><button class="btn pri" id="xSave">Tambah biaya</button></div>
-        ${ex.length ? `<div class="tbl"><table><tbody>${ex.map(x => `<tr><td class="small">${fDate(x.expense_date)}</td><td>${esc(x.category)}<div class="muted small">${esc(x.notes || "")}</div></td><td class="num">${rp(x.amount)}</td><td class="num"><button class="btn danger sm" data-dx="${x.id}" aria-label="Hapus">×</button></td></tr>`).join("")}</tbody></table></div>` : `<p class="muted">Belum ada biaya di periode ini.</p>`}
+        ${ex.length ? `<p class="muted small">${ex.length} catatan · total ${rp(ex.reduce((a, x) => a + Number(x.amount), 0))}</p><div class="tbl" style="max-height:420px;overflow:auto"><table><tbody>${ex.map(x => `<tr><td class="small">${fDate(x.expense_date)}</td><td>${esc(x.category)}<div class="muted small">${esc(x.notes || "")}</div></td><td class="num">${rp(x.amount)}</td><td class="num"><button class="btn danger sm" data-dx="${x.id}" aria-label="Hapus">×</button></td></tr>`).join("")}</tbody></table></div>` : `<p class="muted">Belum ada biaya di periode ini.</p>`}
       </div>
     </div>
     <div class="grid2">
