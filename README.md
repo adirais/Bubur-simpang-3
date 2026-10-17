@@ -2,7 +2,7 @@
 
 Aplikasi operasional Bubur Simpang Tiga: kasir, prep harian, closing kas & checklist, absensi selfie, stok bahan, order & pembelian bahan, keuangan, dan analitik.
 
-**Alamat:** https://adirais.github.io/Bubur-simpang-3/
+**Alamat:** https://bst-os.github.io
 
 Staf masuk dengan **username + PIN 6 angka**. Data tersimpan di Supabase (proyek `bubur-simpang-3`, Singapura) dan dijaga per peran langsung di database.
 
